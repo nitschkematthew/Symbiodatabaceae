@@ -1,0 +1,482 @@
+---
+title: "SymbioDatabaceae"
+author: "Matthew R. Nitschke"
+date: "12-Dec-2019"
+---
+
+The code below is my workflow to curate a Symbiodiniaceae ITS2 reference database comprising the sequence data from GeoSymbio (Franklin et al 2012) and SymbioGBR (Tonk et al 2013). The final .fasta file is internally consistent, dereplicated, and has NCBI accession numbers as part of the identifier.
+
+Note: This is a base database of combined Geosymbio and SymbioGBR sequences. I will eventually fork and expand the base database with more recent studies.
+
+# Load in libraries
+
+```{r}
+library(ape)
+library(insect)
+library(aphid)
+library(kmer)
+library(Biostrings)
+library(hiReadsProcessor)
+library(DECIPHER)
+library(rentrez)
+library(alignfigR)
+library(tidyverse)
+library(knitr)
+```
+
+# Helper functions
+
+```{r}
+# Import a set of helper functions. E.g. converting between data types, fetching sequences from NCBI, deprelicating, extracting accession numbers, etc
+
+source("../Helper_functions/help.R")
+```
+
+# GeoSymbio
+
+Franklin, E. C., Stat, M., Pochon, X., Putnam, H. M., & Gates, R. D. (2012). GeoSymbio: a hybrid, cloud-based web application of global geospatial bioinformatics and ecoinformatics for Symbiodinium-host symbioses. Molecular Ecology Resources, 12(2), 369-373.
+
+```{r}
+# Import geosymbio table data and update taxonomy. NOTE!! Clade D and Clade G eventually have to be checked for the foraminifera specific D & G lineages, which should not be classified as Durusdinium or Gerakladium. Same for Temperate clade A which should not be classified as Symbiodinium.
+
+geosymbio <- read.csv("../Published_databases//GeoSymbio_Database.csv") %>%
+  mutate(Symbiont_Genus = case_when(
+    Clade == "A" ~ 'Symbiodinium',
+    Clade == "B" ~ 'Breviolum',
+    Clade == "C" ~ 'Cladocopium',
+    Clade == "D" ~ 'Durusdinium',
+    Clade == "E" ~ 'Effrenium',
+    Clade == "F" & str_detect(Type, "F1|F5") ~ "Fugacium",
+    Clade == "F" & str_detect(Type, "N_A") ~ "Symbiodinium_F",
+    Clade == "F" & str_detect(Type, "F2") ~ "Symbiodinium_Fr2",
+    Clade == "F" & str_detect(Type, "F3") ~ "Symbiodinium_Fr3",
+    Clade == "F" & str_detect(Type, "F4") ~ "Symbiodinium_Fr4",
+    Clade == "G" ~ 'Gerakladium',
+    Clade == "H" ~ 'Symbiodinium_H',
+    Clade == "I" ~ 'Symbiodinium_I'),
+    Genbank = trimws(Genbank))
+
+# Import geosymbio sequence data directly downloaded from website
+geosymbio.fasta <- readDNAStringSet("../Published_databases//GeoSymbio_ITS2_LocalDatabase.fasta")
+```
+
+## Inspect missing sequences
+
+In the geosymbio table data there are Types that are not represented in the geosymbio sequence file.
+Of these, there are Types with multiple records and multiple accession numbers.
+
+```{r}
+geosymbio <- geosymbio %>%
+  mutate(type_in_fasta = geosymbio$Type %in% names(geosymbio.fasta))
+
+genbank_no_types <- geosymbio %>%
+  group_by(Clade, Type, Genbank) %>%
+  filter(type_in_fasta == FALSE,
+         !str_detect(Genbank, "same|Same|N_A")) %>%
+  count()
+
+# This is a table of the types without a representative sequence in the geosymbio fasta, and the number of times they appear in the geosymbio records
+
+# Furthermore, as the GeoSymbio_ITS2_LocalDatabase.fasta file doesnt specify the accession numbers, it just seems easier to start from scratch and build up a list of sequences matching the Geosymbio table accession lists. This was my motivation for starting this workflow in the first instance.
+```
+
+## Fetch all ITS2 sequences from Genbank listed in GeoSymbio using NCBI accession numbers
+
+```{r}
+# Get list of genbank accession numbers
+accn <- geosymbio %>%
+  group_by(Clade, Type, Genbank) %>% # There are Types that have more than one accession number
+  filter(!str_detect(Genbank, "same|Same|N_A")) %>%
+  count()
+
+## Retrieve these from genbank
+query <- trimws(accn$Genbank) # Some have trailing white space - use trimws() to remove it
+
+# Set my API key
+set_entrez_key("XXXXXXXXXXXXXXXXXXXXXXXXX")
+
+# Call fetch_seqs and send all output to fasta
+# Note: this appends to the geosymbio_all.fasta file so if you stop the script halfway through, delete the file before restarting.
+
+for(i in 1:length(query)){
+	q <- query[i]
+	seq <- fetch_seqs(q)
+	cat(seq, file = "geosymbio_all.fasta", append = TRUE)
+	Sys.sleep(0.5) # Wait between calls so we dont get IP banned by NCBI :(
+}
+
+# Check result versus query and check if any seqs were missing from the DB
+geosymbio_all <- readDNAStringSet("geosymbio_all.fasta")
+geosymbio_all_accn <- extract_accn(geosymbio_all)
+any(str_detect(geosymbio_all_accn, "404NotFound")) # Any seqs 404notfound? FALSE = missing sequences
+all(query %in% geosymbio_all_accn) # All accession numbers from query found in fasta? TRUE = all worked!
+```
+
+## Inspect sequence lengths
+
+Some of the sequences we retrieved contain extra data (anything from the 18S through to the 28S). For the purposes of this database I want the ITS2 sequence data (which should be between 250-350 bp in length) - so we need to remove the flanking 18S/ITS1/5.8S and 28S regions
+
+```{r}
+DNAStringSet_to_df(geosymbio_all) %>%
+  mutate(width = str_length(seqs)) %>%
+  ggplot() +
+  geom_histogram(binwidth = 20, aes(width)) +
+  theme(aspect.ratio = 1) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_x_continuous(breaks = seq(100, 2075, by = 100))
+# Here we see that there is large number of sequences > 300 bp
+```
+
+```{r}
+# First lets check the short sequences and how they line up AACCAA.....
+DNAStringSet_to_df(geosymbio_all) %>%
+  mutate(width = str_length(seqs)) %>%
+  filter(width < 400) %>%
+  select(-width) %>%
+  mutate(seqs = str_sub(seqs, start = 1, end = 100)) %>% # Inspect first 100 bp
+  df_to_DNAStringset() %>%
+  writeXStringSet("short_inspect_start.fasta")
+
+my_data <- read_alignment("short_inspect_start.fasta")
+plot_alignment(my_data, "dna") # The majority of sequences start in same place (AACCAA) - some dont.
+
+# Write short sequencs to fasta
+DNAStringSet_to_df(geosymbio_all) %>%
+  mutate(width = str_length(seqs)) %>%
+  filter(width < 400) %>%
+  select(-width) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("short.fasta")
+
+# Next lets trim the long sequences and then plot them as above
+DNAStringSet_to_df(geosymbio_all) %>%
+  mutate(width = str_length(seqs)) %>%
+  filter(width >= 400) %>%
+  select(-width) %>%
+  df_to_DNAStringset() %>%
+  as.DNAbin()
+
+# Define the standard ITS2 primers
+fwd <- "AATCAATGGCCTCCTGAA"
+rev <- "ATGAAGTCAGGCAAGCGA"
+
+trim <- virtualPCR(too_long, up = fwd, down = rev, rcdown = FALSE)
+
+trim %>%
+  DNAbin_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 1, end = 100)) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("long.fasta")
+
+my_data <- read_alignment("long.fasta")
+plot_alignment(my_data, "dna") # Looks good. The trimming worked
+
+# Bind the short and trimmed sequences and filter it to contain only those that start with "AACC".
+
+short.fas <- DNAStringSet_to_df(geosymbio_all) %>%
+  mutate(width = str_length(seqs)) %>%
+  filter(width < 400) %>%
+  select(-width)
+
+longtrim.fas <- trim %>%
+  DNAbin_to_DNAStringSet() %>%
+  DNAStringSet_to_df()
+
+rbind(short.fas, longtrim.fas) %>%
+  filter(str_sub(seqs, start = 1, end = 4) == "AACC") %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("short_plus_long_trimmed.fasta")
+
+# Next inspect all those sequences that fail the trimming and the above "AACC" selection
+
+short_plus_long_trimmed <- readDNAStringSet("short_plus_long_trimmed.fasta") %>%
+  DNAStringSet_to_df()
+
+DNAStringSet_to_df(geosymbio_all) %>%
+  mutate(trimmed = names %in% short_plus_long_trimmed$names) %>%
+  filter(trimmed == FALSE) %>%
+  mutate(width = str_length(seqs))
+  select(-trimmed) %>%
+  mutate(seqs = str_sub(seqs, start = 1, end = 100)) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("fails.fasta")
+
+my_data <- read_alignment("fails.fasta")
+plot_alignment(my_data, "dna") 
+# There are blocks of sequences that are in alignment - they probably come from the same studies. But certainly some sequences are partial ITS2 only
+```
+
+## Curate the sequences that failed trimming
+
+To know where each sequence needs to be trimmed we will need to produce an alignment for each genus. The ITS2 is hypervariable-enough that typical alignment methods will fail when attempting to input sequences from multiple genera.
+
+```{r}
+fails <- DNAStringSet_to_df(geosymbio_all) %>%
+  mutate(trimmed = names %in% short_plus_long_trimmed$names) %>%
+  filter(trimmed == FALSE) %>%
+  mutate(accn = stringi::stri_extract(names, regex='[^.]*'))
+
+geosymbio_merge <- select(geosymbio, Clade, Symbiont_Genus, Type, Genbank)
+fails_meta <- left_join(fails, geosymbio_merge, by = c("accn" = "Genbank"))
+```
+
+### Symbiodinium
+
+```{r}
+fails_meta %>%
+  filter(Symbiont_Genus == "Symbiodinium") %>%
+  select(-accn, -Clade, -Symbiont_Genus, - Type) %>%
+  df_to_DNAStringset() %>%
+  AlignSeqs() %>%
+  writeXStringSet("Symbiodinium_fails_aligned.fasta")
+
+Symbiodinium_aligned <- read_alignment("Symbiodinium_fails_aligned.fasta")
+plot_alignment(Symbiodinium_aligned, "dna") 
+# Alignment looks good - ITS2 region we want starts at position 425 and ends at position 693 of the alignment
+
+readDNAStringSet("Symbiodinium_fails_aligned.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 425, end = 693)) %>%
+  mutate(seqs = str_remove_all(seqs, "-")) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Symbiodinium_fails_ITS2.fasta")
+```
+
+### Breviolum
+
+```{r}
+# GU907630 doesnt appear to be an ITS2 sequence and is described on NCBI as a microsatellite flanking region Si15
+
+fails_meta %>%
+  filter(Symbiont_Genus == "Breviolum",
+       accn != "GU907630") %>%
+  select(-accn, -Clade, -Symbiont_Genus, - Type) %>%
+  df_to_DNAStringset() %>%
+  AlignSeqs() %>%
+  writeXStringSet("Breviolum_fails_aligned.fasta")
+
+Breviolum_aligned <- read_alignment("Breviolum_fails_aligned.fasta")
+plot_alignment(Breviolum_aligned, "dna") 
+# Alignment looks good - ITS2 region we want starts at position 380 ("AACCGATGGC") and ends at the final position of the alignment
+
+readDNAStringSet("Breviolum_fails_aligned.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 380)) %>%
+  mutate(seqs = str_remove_all(seqs, "-")) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Breviolum_fails_ITS2.fasta")
+```
+
+### Cladocopium
+
+```{r}
+# We found our first conspicuous accession number errors: The accessions filtered out below do not belong to Symbiodinium in the NCBI nucleotide database
+
+fails_meta %>%
+  filter(Symbiont_Genus == "Cladocopium",
+         accn != "FN298428", # Remove the errors as described above
+         accn != "FL919241",
+         accn != "FL919242",
+         accn != "FL919244",
+         Type != "C90") %>% # Remove the C90 sequences as they are mostly 28S and only a short fraction of the ITS2
+  select(-accn, -Clade, -Symbiont_Genus, - Type) %>%
+  df_to_DNAStringset() %>%
+  AlignSeqs() %>%
+  writeXStringSet("Cladocopium_fails_aligned.fasta")
+
+Cladocopium_aligned <- read_alignment("Cladocopium_fails_aligned.fasta")
+plot_alignment(Cladocopium_aligned, "dna") 
+# Alignment looks great! ITS2 starts at position 421 and ends at position 717 of the alignment
+
+readDNAStringSet("Cladocopium_fails_aligned.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 421, end = 717)) %>%
+  mutate(seqs = str_remove_all(seqs, "-")) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Cladocopium_fails_ITS2.fasta")
+```
+
+### Durusdinium
+
+```{r}
+fails_meta %>%
+  filter(Symbiont_Genus == "Durusdinium") %>%
+  select(-accn, -Clade, -Symbiont_Genus, - Type) %>%
+  df_to_DNAStringset() %>%
+  AlignSeqs() %>%
+  writeXStringSet("Durusdinium_fails_aligned.fasta")
+
+Durusdinium_aligned <- read_alignment("Durusdinium_fails_aligned.fasta")
+plot_alignment(Durusdinium_aligned, "dna")
+# Alignment looks great - ITS2 region we want starts at position 426 of the alignment
+
+readDNAStringSet("Durusdinium_fails_aligned.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 426, end = 709)) %>%
+  mutate(seqs = str_remove_all(seqs, "-")) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Durusdinium_fails_ITS2.fasta")
+```
+
+### Fr2, Fr3, Fr4, Fugacium
+
+```{r}
+fails_meta %>%
+  filter(Clade == "F") %>%
+  select(-accn, -Clade, -Symbiont_Genus, - Type) %>%
+  df_to_DNAStringset() %>%
+  AlignSeqs() %>%
+  writeXStringSet("Clade_F_fails_aligned.fasta")
+
+Clade_F_aligned <- read_alignment("Clade_F_fails_aligned.fasta")
+plot_alignment(Clade_F_aligned, "dna")
+# Alignment looks good - ITS2 region we want starts at position 398 and ends at 714 of the alignment. Quite of a number of the sequences start without the first part of 5.8s and are also partial sequences
+
+readDNAStringSet("Clade_F_fails_aligned.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 398, end = 714)) %>%
+  mutate(seqs = str_remove_all(seqs, "-")) %>%
+  filter(seqs != "") %>% # Two sequences do not contain ITS2 information
+  df_to_DNAStringset() %>%
+  writeXStringSet("Clade_F_fails_ITS2.fasta")
+```
+
+### Gerakladium
+
+```{r}
+fails_meta %>%
+  filter(Symbiont_Genus == "Gerakladium") %>%
+  select(-accn, -Clade, -Symbiont_Genus, - Type) %>%
+  df_to_DNAStringset() %>%
+  AlignSeqs() %>%
+  writeXStringSet("Gerakladium_fails_aligned.fasta")
+
+Gerakladium_aligned <- read_alignment("Gerakladium_fails_aligned.fasta")
+plot_alignment(Gerakladium_aligned, "dna")
+# Alignment looks good - ITS2 region we want starts at position 415 and ends at 752 of the alignment.
+
+readDNAStringSet("Gerakladium_fails_aligned.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 415, end = 752)) %>%
+  mutate(seqs = str_remove_all(seqs, "-")) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Gerakladium_fails_ITS2.fasta")
+```
+
+### H
+
+```{r}
+## All of these sequences are partial - so we need to bring in some complete ITS2 sequences from Clade_H to line them up
+
+fails_meta %>%
+  filter(Symbiont_Genus == "Symbiodinium_H") %>%
+  select(-accn, -Clade, -Symbiont_Genus, - Type) %>%
+  df_to_DNAStringset() %>%
+  AlignSeqs() %>%
+  writeXStringSet("Clade_H_fails_aligned.fasta")
+
+Clade_H_aligned <- read_alignment("Clade_H_fails_aligned.fasta")
+plot_alignment(Clade_H_aligned, "dna")
+# Alignment looks good - ITS2 region we want ends at position 244 of the alignment.
+
+readDNAStringSet("Clade_H_fails_aligned.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 1, end = 244)) %>%
+  mutate(seqs = str_remove_all(seqs, "-")) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Clade_H_fails_ITS2.fasta")
+```
+
+### Effrenium
+
+```{r}
+# Only one Effrenium sequence failed
+
+fails_meta %>%
+  filter(Symbiont_Genus == "Effrenium") %>%
+  select(-accn, -Clade, -Symbiont_Genus, - Type, -trimmed) %>%
+  mutate(seqs = str_sub(seqs, start = 414, end = 701)) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Effrenium_fails_ITS2.fasta")
+```
+
+## Join the short sequences, the long_trimmed sequences, and the sequences that failed trimming and were aligned and trimmed manually
+
+```{r}
+short_plus_long_trimmed <- readDNAStringSet("short_plus_long_trimmed.fasta") %>%
+  DNAStringSet_to_df()
+Symbiodinium <- readDNAStringSet("Symbiodinium_fails_ITS2.fasta") %>%
+  DNAStringSet_to_df()
+Breviolum <- readDNAStringSet("Breviolum_fails_ITS2.fasta") %>%
+  DNAStringSet_to_df()
+Cladocopium <- readDNAStringSet("Cladocopium_fails_ITS2.fasta") %>%
+  DNAStringSet_to_df()
+Durusdinium <- readDNAStringSet("Durusdinium_fails_ITS2.fasta") %>%
+  DNAStringSet_to_df()
+Clade_F <- readDNAStringSet("Clade_F_fails_ITS2.fasta") %>%
+  DNAStringSet_to_df()
+Gerakladium <- readDNAStringSet("Gerakladium_fails_ITS2.fasta") %>%
+  DNAStringSet_to_df()
+Clade_H <- readDNAStringSet("Clade_H_fails_ITS2.fasta") %>%
+  DNAStringSet_to_df()
+Effrenium <- readDNAStringSet("Effrenium_fails_ITS2.fasta") %>%
+  DNAStringSet_to_df()
+
+geosymbio_curated_sequences <- rbind(short_plus_long_trimmed,
+                                     Symbiodinium,
+                                     Breviolum,
+                                     Cladocopium,
+                                     Durusdinium,
+                                     Clade_F,
+                                     Gerakladium,
+                                     Clade_H,
+                                     Effrenium) %>%
+  mutate(accn = stringi::stri_extract(names, regex='[^.]*')) %>%
+  left_join(., geosymbio, by = c("accn" = "Genbank")) %>%
+  select(seqs, accn, Clade, Type) %>%
+  mutate(names = case_when(
+    Type == "N_A" ~ paste(Clade, accn, sep = "_"),
+    Type != "N_A" ~ paste(Type, accn, sep = "_")))
+
+geosymbio_curated_sequences %>%
+  select(names, seqs) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("geosymbio_curated.fasta")
+```
+
+# SymbioGBR
+
+Tonk, L., Bongaerts, P., Sampayo, E. M., & Hoegh-Guldberg, O. (2013). SymbioGBR: a web-based database of Symbiodinium associated with cnidarian hosts on the Great Barrier Reef. BMC ecology, 13(1), 7.
+
+```{r}
+# Import geosymbio sequence data directly downloaded from website
+symbioGBR.fasta <- readDNAStringSet("../Published_databases/SymbioGBR.fasta")
+```
+
+```{r}
+# Get the geosymbio data we curated above
+geosymbio_curated <- readDNAStringSet("geosymbio_curated.fasta") %>%
+  DNAStringSet_to_df()
+
+symbioGBR.df <- symbioGBR.fasta  %>%
+  DNAStringSet_to_df()
+```
+
+# Symbiodatabaceae
+
+```{r}
+# Bind the two datasets together
+geosymbio_symbioGBR <- rbind(geosymbio_curated, symbioGBR.df)
+
+# Dereplicate and concatenate the two datasets ---
+
+# Note: During the writing of derep_cat_names function it became evident that geosymbio does not consistently label genbank accession numbers with same_as. Some are not labelled with same_as, despite being identical sequences, from the same study, where the samples came from different depths. Whereas other entries that come from different depths/hosts but have the same sequences, are labelled with same_as_
+
+geosymbio_symbioGBR %>%
+  df_to_DNAStringset() %>%
+  derep_cat_names() %>%
+  writeXStringSet("Symbiodatabaceae.fasta")
+
+# SymbioDatabaceae.fasta is a curated geosymbio ITS2 sequence database in Type_Accession format. We have increased the number of sequences from 409 in the GeoSymbio_ITS2_LocalDatabase.fasta file that can be downloaded in from the Geosymbio webpage, to 789 sequences, and each sequence can be traced back to its reference accession. The file is dereplicated to contain unique sequences, during which the names of the replicates were concatenated.
+```
+
