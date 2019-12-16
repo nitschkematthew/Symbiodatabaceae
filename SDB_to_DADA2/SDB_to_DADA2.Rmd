@@ -114,6 +114,8 @@ F_dist_summary <- long_dist %>%
 # Most of the Symbiodinium_F sequences are closest to Fugacium. Revise the taxonomy accordingly.
 ```
 
+# Revised taxonomy
+
 ```{r}
 SDB_tax_revised <- SDB %>%
   mutate(genus = case_when(str_sub(names, start = 1, end = 1) == "A" ~ 'Symbiodinium',
@@ -139,6 +141,7 @@ SDB_tax_revised <- SDB %>%
   unite(col = "names", taxonomy, genus, names, sep = ";")
 ```
 
+# Check revised taxonomy again
 
 ```{r}
 # Produced new kdistances on revised taxonomy
@@ -184,47 +187,3 @@ SDB_tax_revised %>%
   df_to_DNAStringset() %>%
   writeXStringSet("Symbiodatabaceae_DADA2.fasta")
 ```
-
-
-
-```{r}
-long_dist_filt <- long_dist %>%
-  filter(value >= 0.90)
-```
-
-```{r}
-library(igraph)
-library(ggraph)
-library(tidygraph)
-
-links <- long_dist_filt %>%
-  filter(genus1 == genus2,
-        genus1 == "Durusdinium") %>%
-  select(Var1, Var2, value)
-
-test <- links %>%
-  mutate(Var1 = str_remove(Var1, "Durusdinium;"),
-         Var2 = str_remove(Var2, "Durusdinium;")) %>%
-  mutate(value = case_when(value < 0.99 ~ NA_real_, TRUE ~ value)) %>%
-  as_tbl_graph() %>%
-  activate(nodes) %>%
-  mutate(importance = centrality_alpha(weights = value, alpha = 1, exo = 1, tol = 1e-07,
-  loops = FALSE)) %>%
-  ggraph(layout = "fr") + 
-  geom_node_point(aes(colour = importance), size = 4) +
-  geom_edge_link(alpha = 0.5, aes(width = value)) + 
-  geom_node_text(aes(label = name)) +
-  scale_edge_width(range = c(0.1, 4)) +
-  theme(aspect.ratio = 1)
-```
-
-```{r}
-net <- graph_from_data_frame(d = links, vertices = nodes) %>%
-  set_edge_attr("weight", value = "value")
-
-cut.off <- 0.988
-
-net.sp <- delete_edges(net, E(net)[weight<cut.off])
-```
-
-
