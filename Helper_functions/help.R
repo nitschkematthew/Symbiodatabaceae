@@ -13,12 +13,13 @@ df_to_DNAStringset <- function(df, seqs = "seqs", names = "names"){
   return(DNAstr)
 }
 
+# FIX THIS
 # Convert data.frame (seq_df) into a DNAbin object to use with ape/insect functions
-df_to_DNAbin <- function(seq_df, seqs = "seqs", names = "names"){
-  DNA <- as.character(seq_df[[seqs]])
-  names(DNA) <- seq_df[[names]]
-  return(DNA)
-}
+# df_to_DNAbin <- function(seq_df, seqs = "seqs", names = "names"){
+#   DNA <- as.character(seq_df[[seqs]])
+#   names(DNA) <- seq_df[[names]]
+#   return(DNA)
+# }
 
 # Convert DNAbin to DNAStringSet to use with Biostrings functions
 DNAbin_to_DNAStringSet <- function(DNAbin){
@@ -26,6 +27,7 @@ DNAbin_to_DNAStringSet <- function(DNAbin){
   return(DNAstrings)
 }
 
+# Convert DNAstringset to DNAbin
 DNAStringSet_to_DNAbin <- function(DNAStringSet){
   DNAbin <- as.DNAbin(DNAStringSet)
   return(DNAbin)
@@ -67,16 +69,11 @@ derep_cat_names <- function(dnaSet){
   }
   
   seq_df <- DNAStringSet_to_df(dnaSet) %>%
-    group_by(names, seqs) %>%
-    distinct() %>%
+    distinct(names, .keep_all = TRUE) %>%
     ungroup() %>%
     group_by(seqs) %>%
     summarise(names = paste(names, collapse = '|')) %>%
     ungroup()
-  
-  seq_df <- seq_df %>%
-    group_by(names) %>%
-    distinct()
   
   seq_ss <- df_to_DNAStringset(seq_df, "seqs", "names")
   return(seq_ss)

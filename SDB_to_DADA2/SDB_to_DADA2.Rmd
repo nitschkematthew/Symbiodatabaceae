@@ -1,0 +1,230 @@
+---
+title: "SDB_to_DADA2"
+author: "MNitschke"
+date: "12/12/2019"
+---
+
+If you use the RDP classifier built-in to DADA2 to assign taxonomy to sequences [with the function assignTaxonomy()], a reference database is expected in a .fasta format with the taxonomic ranks separated by ; as the sequence identifier. E.g.
+
+>Eukaryota;Dinoflagellata;Dinophyceae;Suessiales;Symbiodiniaceae;Symbiodinium;A131_EF656432
+AACCAATGGCCTCTTGAACGTGCATTGCGCTCTTGGGATATGCCTGAGAGCATGTCTGCTTCAGTGCTTCTACTTTCATTTTCTGCTGCTCTTGT.....
+>Eukaryota;Dinoflagellata;Dinophyceae;Suessiales;Symbiodiniaceae;Symbiodinium;A132_AB190284
+AACCAATGGCCTCTTGAACGTGCATTGCGCTCTTGGGATATGCCTGAGAGCATGTCTGCTTCAGTGCTTCTACTTTCATTTTCTGCTGCTCTTGT......
+
+The following is my workflow to add taxonomy to the Symbiodatabaceae.fasta file for use in DADA2.
+
+```{r}
+library(ape)
+library(insect)
+library(aphid)
+library(kmer)
+library(Biostrings)
+library(phangorn)
+library(hiReadsProcessor)
+library(DECIPHER)
+library(rentrez)
+library(alignfigR)
+library(reshape2)
+library(tidyverse)
+library(viridis)
+```
+
+# Helper functions
+
+```{r}
+# Import a set of helper functions. E.g. converting between data types, fetching sequences from NCBI, deprelicating, extracting accession numbers, etc
+
+source("../Helper_functions/help.R")
+```
+
+# Create taxonomy heirarchy
+
+```{r}
+# Load in Symbiodatabaceae fasta file
+SDB <- readDNAStringSet("../Symbiodatabaceae/Symbiodatabaceae.fasta") %>%
+  DNAStringSet_to_df()
+```
+
+```{r}
+# The taxonomy of the Symbiodiniaceae
+tax <- "Eukaryota;Dinoflagellata;Dinophyceae;Suessiales;Symbiodiniaceae"
+```
+
+```{r}
+# String matching. Any sequence ID that starts with "A", eg: A1, will be piped into "Symbiodinium", "C" into Cladocopium, etc. We will check these binnings further along in this workflow.
+
+SDB_tax <- SDB %>%
+  mutate(genus = case_when(str_sub(names, start = 1, end = 1) == "A" ~ 'Symbiodinium',
+    str_sub(names, start = 1, end = 1) == "B" ~ 'Breviolum',
+    str_sub(names, start = 1, end = 1) == "C" ~ 'Cladocopium',
+    str_sub(names, start = 1, end = 1) == "D" & str_sub(names, start = 1, end = 4) == "D1.1" ~ "Foraminifera_D",
+    str_sub(names, start = 1, end = 1) == "D" & str_sub(names, start = 1, end = 4) == "D1.2" ~ "Foraminifera_D",
+    str_sub(names, start = 1, end = 1) == "D" ~ 'Durusdinium',
+    str_sub(names, start = 1, end = 1) == "E" ~ 'Effrenium',
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F1" ~ "Fugacium",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F5" ~ "Fugacium",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 3) == "N_A" ~ "Symbiodinium_F",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F_" ~ "Symbiodinium_F",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F2" ~ "Symbiodinium_Fr2",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F3" ~ "Symbiodinium_Fr3",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F4" ~ "Symbiodinium_Fr4",
+    str_sub(names, start = 1, end = 1) == "G" ~ 'Gerakladium',
+    str_sub(names, start = 1, end = 1) == "H" ~ 'Symbiodinium_H',
+    str_sub(names, start = 1, end = 1) == "I" ~ 'Symbiodinium_I',
+    TRUE ~ "Unknown")) %>%
+  mutate(taxonomy = tax) %>%
+  unite(col = "names", taxonomy, genus, names, sep = ";")
+```
+
+# Use kmer to produce alignment-free distance matrix to make sure the assigned taxonomies make sense based on kmer similarity
+
+```{r}
+dist <- SDB_tax %>%
+  arrange(names) %>%
+  df_to_DNAStringset() %>%
+  DNAStringSet_to_DNAbin() %>%
+  kdistance(k = 6, residues = "DNA", method = "euclidean")
+
+dist_m <- dist %>% 
+  as.matrix()
+
+long_dist <- melt(dist_m)[melt(lower.tri(dist_m))$value,] %>%
+  mutate(Var1 = str_remove(Var1, "Eukaryota;Dinoflagellata;Dinophyceae;Suessiales;Symbiodiniaceae;"),
+         Var2 = str_remove(Var2, "Eukaryota;Dinoflagellata;Dinophyceae;Suessiales;Symbiodiniaceae;")) %>%
+  mutate(Var1 = case_when(str_detect(Var1, "|") ~ word(Var1 , 1, sep = "\\|"),
+         TRUE ~ Var1),
+         Var2 = case_when(str_detect(Var2, "|") ~ word(Var2 , 1, sep = "\\|"),
+         TRUE ~ Var2)) %>%
+  mutate(genus1 = word(Var1 , 1, sep = "\\;"),
+         genus2 = word(Var2 , 1, sep = "\\;")) %>%
+  mutate(value = 1-value)
+
+unknown_dist_summary <- long_dist %>%
+  filter(genus1 == "Unknown") %>%
+  group_by(genus1, genus2) %>%
+  summarise(meankdist = mean(value),
+            sdkdist = sd(value))
+# Most unknown sequences included in SymbioGBR are likely to be Cladocopium, except for Symbiodinium sp. StereoSH1_AB253788 which looks like Gerakladium. Revise the taxonomy accordingly.
+
+F_dist_summary <- long_dist %>%
+  filter(genus1 == "Symbiodinium_F") %>%
+  group_by(genus1, genus2) %>%
+  summarise(meankdist = mean(value),
+            sdkdist = sd(value))
+# Most of the Symbiodinium_F sequences are closest to Fugacium. Revise the taxonomy accordingly.
+```
+
+```{r}
+SDB_tax_revised <- SDB %>%
+  mutate(genus = case_when(str_sub(names, start = 1, end = 1) == "A" ~ 'Symbiodinium',
+    str_sub(names, start = 1, end = 1) == "B" ~ 'Breviolum',
+    str_sub(names, start = 1, end = 1) == "C" ~ 'Cladocopium',
+    str_sub(names, start = 1, end = 1) == "D" & str_sub(names, start = 1, end = 4) == "D1.1" ~ "Foraminifera_D",
+    str_sub(names, start = 1, end = 1) == "D" & str_sub(names, start = 1, end = 4) == "D1.2" ~ "Foraminifera_D",
+    str_sub(names, start = 1, end = 1) == "D" ~ 'Durusdinium',
+    str_sub(names, start = 1, end = 1) == "E" ~ 'Effrenium',
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F1" ~ "Fugacium",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F5" ~ "Fugacium",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 3) == "N_A" ~ "Fugacium",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F_" ~ "Fugacium",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F2" ~ "Symbiodinium_Fr2",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F3" ~ "Symbiodinium_Fr3",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F4" ~ "Symbiodinium_Fr4",
+    str_sub(names, start = 1, end = 1) == "G" ~ 'Gerakladium',
+    str_sub(names, start = 1, end = 1) == "H" ~ 'Symbiodinium_H',
+    str_sub(names, start = 1, end = 1) == "I" ~ 'Symbiodinium_I',
+    str_detect(names, "Symbiodinium sp. StereoSH1_AB253788") ~ 'Gerakladium', # This is quite an interesting sequence - closest is Gerakladium
+    TRUE ~ "Cladocopium")) %>% # The rest are Cladocopium
+  mutate(taxonomy = tax) %>%
+  unite(col = "names", taxonomy, genus, names, sep = ";")
+```
+
+
+```{r}
+# Produced new kdistances on revised taxonomy
+dist_revised <- SDB_tax_revised %>%
+  arrange(names) %>%
+  df_to_DNAStringset() %>%
+  DNAStringSet_to_DNAbin() %>%
+  kdistance(k = 6, residues = "DNA", method = "euclidean")
+
+dist_m_revised <- dist_revised %>% 
+  as.matrix()
+
+long_dist_revised <- melt(dist_m_revised)[melt(lower.tri(dist_m_revised))$value,] %>%
+  mutate(Var1 = str_remove(Var1, "Eukaryota;Dinoflagellata;Dinophyceae;Suessiales;Symbiodiniaceae;"),
+         Var2 = str_remove(Var2, "Eukaryota;Dinoflagellata;Dinophyceae;Suessiales;Symbiodiniaceae;")) %>%
+  mutate(Var1 = case_when(str_detect(Var1, "|") ~ word(Var1 , 1, sep = "\\|"),
+         TRUE ~ Var1),
+         Var2 = case_when(str_detect(Var2, "|") ~ word(Var2 , 1, sep = "\\|"),
+         TRUE ~ Var2)) %>%
+  mutate(genus1 = word(Var1 , 1, sep = "\\;"),
+         genus2 = word(Var2 , 1, sep = "\\;")) %>%
+  mutate(value = 1-value)
+
+long_dist_revised_summary <- long_dist_revised %>%
+  group_by(genus1, genus2) %>%
+  summarise(meankdist = mean(value),
+            sdkdist = sd(value))
+
+# Looking pretty good in terms of genus-binning according to k-distance.
+ggplot(data = long_dist_revised_summary) +
+  theme_bw() +
+  geom_tile(aes(x = genus1, y = genus2, fill = meankdist)) +
+  scale_fill_viridis(name = "kdist", option = "C") +
+  theme(aspect.ratio = 1, axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  scale_x_discrete(limits = unique(long_dist_revised_summary$genus1)) +
+  scale_y_discrete(limits = unique(long_dist_revised_summary$genus1))
+```
+
+# Write the Symbiodatabaceae output with the updated taxonomy
+
+```{r}
+SDB_tax_revised %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Symbiodatabaceae_DADA2.fasta")
+```
+
+
+
+```{r}
+long_dist_filt <- long_dist %>%
+  filter(value >= 0.90)
+```
+
+```{r}
+library(igraph)
+library(ggraph)
+library(tidygraph)
+
+links <- long_dist_filt %>%
+  filter(genus1 == genus2,
+        genus1 == "Durusdinium") %>%
+  select(Var1, Var2, value)
+
+test <- links %>%
+  mutate(Var1 = str_remove(Var1, "Durusdinium;"),
+         Var2 = str_remove(Var2, "Durusdinium;")) %>%
+  mutate(value = case_when(value < 0.99 ~ NA_real_, TRUE ~ value)) %>%
+  as_tbl_graph() %>%
+  activate(nodes) %>%
+  mutate(importance = centrality_alpha(weights = value, alpha = 1, exo = 1, tol = 1e-07,
+  loops = FALSE)) %>%
+  ggraph(layout = "fr") + 
+  geom_node_point(aes(colour = importance), size = 4) +
+  geom_edge_link(alpha = 0.5, aes(width = value)) + 
+  geom_node_text(aes(label = name)) +
+  scale_edge_width(range = c(0.1, 4)) +
+  theme(aspect.ratio = 1)
+```
+
+```{r}
+net <- graph_from_data_frame(d = links, vertices = nodes) %>%
+  set_edge_attr("weight", value = "value")
+
+cut.off <- 0.988
+
+net.sp <- delete_edges(net, E(net)[weight<cut.off])
+```
+
+
