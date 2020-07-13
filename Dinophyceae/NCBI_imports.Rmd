@@ -1,0 +1,146 @@
+---
+title: "Untitled"
+author: "MNitschke"
+date: "21/04/2020"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(readr)
+library(rentrez)
+library(Biostrings)
+library(ape)
+library(taxize)
+library(insect)
+source("../Helper_functions/help.R")
+```
+
+# Load in NCBI search: Dinophyceae[Organism] AND internal transcribed spacer 2[All Fields]
+
+```{r}
+Dinophy_nt <- read_delim("Dinophyceae[Organism] AND internal transcribed spacer 2[All Fields].txt", delim = "\n", col_names = "NCBI_record")
+Dinophy_nt <- Dinophy_nt %>% 
+    mutate(variable = rep(c("names", "length", "accession"), nrow(Dinophy_nt) / 3), 
+           key = rep(1:(nrow(Dinophy_nt) / 3), each = 3)) %>%
+    pivot_wider(id_cols = key, names_from = variable, values_from = NCBI_record) %>% 
+    select(-key) %>%
+  filter(!str_detect(names, "Symbiodinium|Cladocopium|Durusdinium|Gerakladium|Breviolum|Halluxium|Freudenthalidium|Fugacium|Symbiodiniaceae")) %>%
+  mutate(length = str_remove(length, " bp linear DNA")) %>%
+  type_convert(col_types = cols(length = col_number())) %>%
+  mutate(accession = case_when(str_detect(accession, " ") ~ word(as.character(accession), 1, sep = "\\ "),
+         TRUE ~ accession)) %>%
+  filter(!str_detect(names, "internal transcribed spacer 2, partial")) %>%
+  filter(!str_detect(names, "ITS2 \\(partial\\)")) %>%
+  separate(names, into = c("number", "genus", "species", "extra"), remove = FALSE, extra = "merge") %>%
+  mutate(species = case_when(str_detect(species, "cf") ~ paste("cf ", word(as.character(extra), 1, sep = "\\ ")),
+         TRUE ~ species))
+
+# List of distinct species
+Dinophy_nt_s1 <- Dinophy_nt %>%
+  distinct(genus, species, .keep_all = TRUE)
+```
+
+# Get the taxonomy of the distinct genera
+
+```{r}
+fetch_taxonomy <- function(query){
+  recs <- try(classification(query, db = 'ncbi'))
+  return(recs)
+}
+
+query <- unique(Dinophy_nt_s1$genus) # Lets get the taxonomy for each genus
+outputlist <- list()
+
+for(i in 1:length(query)){
+	q <- query[i]
+	tax <- fetch_taxonomy(q)
+	outputlist[i] <- tax
+	Sys.sleep(0.5) # Wait between calls so we dont get IP banned by NCBI :(
+}
+
+saveRDS(outputlist, "taxonomylist.rds")
+
+# Parse out the taxonomy levels that you require
+taxdata = data.frame()
+for(x in 1:length(outputlist)){
+    tryCatch({
+      class = filter(outputlist[[x]], rank == "class")$name
+      order = filter(outputlist[[x]], rank == "order")$name
+      family = filter(outputlist[[x]], rank == "family")$name
+      genus = filter(outputlist[[x]], rank == "genus")$name
+      row <- data.frame(cbind(kingdom = "Eukaryota", phylum = "Dinoflagellata", class = class, order = order, family = family, genus = genus))
+      taxdata <- bind_rows(taxdata, row)    
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+taxdata <- taxdata %>%
+  drop_na() %>%
+  filter(class != "Insecta")
+
+write_csv(taxdata, "taxdata-full.csv") # Just a few genera have NA's in higher ranks. Remove these
+```
+
+# Get the query sequences
+
+```{r}
+query_df <- Dinophy_nt %>%
+  filter(genus %in% taxdata$genus)
+query <- trimws(query_df$accession) # Some have trailing white space - use trimws() to remove it
+
+# Set my API key
+set_entrez_key("09d29c61f4558718d09fce2422040089f408")
+
+# Call fetch_seqs and send all output to fasta
+# Note: this appends to the geosymbio_all.fasta file so if you stop the script halfway through, delete the file before restarting.
+
+for(i in 1:length(query)){
+	q <- query[i]
+	seq <- fetch_seqs(q)
+	cat(seq, file = "Dinophyceae.fasta", append = TRUE)
+	Sys.sleep(0.5) # Wait between calls so we dont get IP banned by NCBI :(
+}
+```
+
+# Trim the sequences to ITS2
+
+```{r}
+# Define the standard fwd ITS2 primer that begins in the 5.8s
+fwd <- "GTGAATTGCAGAACTCCGTG"
+
+fasta <- readDNAStringSet("Dinophyceae.fasta") %>%
+  DNAStringSet_to_DNAbin()
+
+trim <- virtualPCR(fasta, up = fwd)
+
+trim %>%
+  DNAbin_to_DNAStringSet() %>%
+  DNAStringSet_to_df() %>%
+  mutate(seqs = str_sub(seqs, start = 1, end = 330)) %>%
+  mutate(length = str_length(seqs)) %>%
+  filter(length > 250) %>%
+  select(-length) %>%
+  distinct(seqs, .keep_all = TRUE) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Dinophyceae_trim.fasta")
+```
+
+# Combine into DADA2 format
+
+```{r}
+taxdata <- read_csv("taxdata-full.csv")
+seq_data <- readDNAStringSet("Dinophyceae_trim.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(accession = word(as.character(names), 1, sep = "\\ ")) %>%
+  select(-names) %>%
+  left_join(Dinophy_nt, .) %>%
+  drop_na() %>%
+  left_join(., taxdata)
+
+seq_data %>%
+  select(kingdom, phylum, class, order, family, genus, species, seqs) %>%
+  mutate(species = paste0(genus, " ", species)) %>%
+  unite(col = "names", kingdom, phylum, class, order, family, genus, species, sep = ";") %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("Dinophyceae_ITS2_DADA2.fasta")
+```

@@ -69,10 +69,12 @@ derep_cat_names <- function(dnaSet){
   }
   
   seq_df <- DNAStringSet_to_df(dnaSet) %>%
-    distinct(names, .keep_all = TRUE) %>%
+    distinct(names, .keep_all = TRUE) %>% # Remove any duplicated IDs
+    mutate(accession = str_sub(names, start = -8)) %>%
+    distinct(accession, .keep_all = TRUE) %>% # Remove and duplicated accession numbers
     ungroup() %>%
     group_by(seqs) %>%
-    summarise(names = paste(names, collapse = '|')) %>%
+    summarise(names = paste(names, collapse = '|')) %>% # Concatenate identical sequences
     ungroup()
   
   seq_ss <- df_to_DNAStringset(seq_df, "seqs", "names")

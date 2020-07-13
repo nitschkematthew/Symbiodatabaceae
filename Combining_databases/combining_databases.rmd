@@ -1,0 +1,60 @@
+---
+title: "Combining ITS2 databases"
+author: "MNitschke"
+date: "23/04/2020"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(readr)
+library(Biostrings)
+library(ape)
+source("../Helper_functions/help.R")
+```
+
+# ITS2 database http://its2-old.bioapps.biozentrum.uni-wuerzburg.de - subsample to 1 sequence per genus
+
+```{r}
+ITS2db_seqs <- readDNAStringSet("../Published_ITS2_databases/ITS2_db.fas") %>%
+  DNAStringSet_to_df()
+
+ITS2db_seqs <- ITS2db_seqs %>%
+    mutate(taxid = word(as.character(names), 1, sep = "\\ "))
+  
+ITS2db_taxid <- read_tsv("../Published_ITS2_databases/ITS2_db.tax", col_names = c("taxid", "taxonomy")) %>%
+  mutate(taxid = as.character(taxid))
+
+ITS2db <- left_join(ITS2db_seqs, ITS2db_taxid) %>%
+  drop_na() %>%
+  separate(taxonomy, into = c("domain", "phylum", "class", "order", "family", "genus", "species"), remove = FALSE, fill = "left", sep = ";", extra = "drop") %>%
+  filter(genus != "Symbiodinium") %>% # First remove all Symbiodinium seqs
+  group_by(genus) %>%
+  sample_n(1) %>%
+  ungroup() %>%
+  unite(col = "taxonomy", domain, phylum, class, order, family, genus, species, sep = ";") %>%
+  select(names = taxonomy, seqs)
+```
+
+# Symbiodatabaceae
+
+```{r}
+SDB <- readDNAStringSet("../SDB_to_DADA2/Symbiodatabaceae_DADA2.fasta") %>%
+  DNAStringSet_to_df()
+```
+
+# Dinophyceae
+
+```{r}
+Dinop <- readDNAStringSet("../Dinophyceae/Dinophyceae_ITS2_DADA2.fasta") %>%
+  DNAStringSet_to_df()
+```
+
+# Final combined ITS2db enriched for Symbiodiniaceae and Dinophyceae
+
+```{r}
+rbind(ITS2db, SDB, Dinop) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet('ITS2dbn1_Dinophy_Symbio.fasta')
+```
+

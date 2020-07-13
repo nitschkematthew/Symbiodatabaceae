@@ -39,7 +39,7 @@ Franklin, E. C., Stat, M., Pochon, X., Putnam, H. M., & Gates, R. D. (2012). Geo
 ```{r}
 # Import geosymbio table data and update taxonomy. NOTE!! Clade D and Clade G eventually have to be checked for the foraminifera specific D & G lineages, which should not be classified as Durusdinium or Gerakladium. Same for Temperate clade A which should not be classified as Symbiodinium.
 
-geosymbio <- read.csv("../Published_databases//GeoSymbio_Database.csv") %>%
+geosymbio <- read.csv("../Published_Symbiodiniaceae_databases/GeoSymbio_Database.csv") %>%
   mutate(Symbiont_Genus = case_when(
     Clade == "A" ~ 'Symbiodinium',
     Clade == "B" ~ 'Breviolum',
@@ -49,15 +49,15 @@ geosymbio <- read.csv("../Published_databases//GeoSymbio_Database.csv") %>%
     Clade == "F" & str_detect(Type, "F1|F5") ~ "Fugacium",
     Clade == "F" & str_detect(Type, "N_A") ~ "Symbiodinium_F",
     Clade == "F" & str_detect(Type, "F2") ~ "Symbiodinium_Fr2",
-    Clade == "F" & str_detect(Type, "F3") ~ "Symbiodinium_Fr3",
+    Clade == "F" & str_detect(Type, "F3") ~ "Freudenthalidium",
     Clade == "F" & str_detect(Type, "F4") ~ "Symbiodinium_Fr4",
     Clade == "G" ~ 'Gerakladium',
-    Clade == "H" ~ 'Symbiodinium_H',
+    Clade == "H" ~ 'Halluxium',
     Clade == "I" ~ 'Symbiodinium_I'),
     Genbank = trimws(Genbank))
 
 # Import geosymbio sequence data directly downloaded from website
-geosymbio.fasta <- readDNAStringSet("../Published_databases//GeoSymbio_ITS2_LocalDatabase.fasta")
+geosymbio.fasta <- readDNAStringSet("../Published_Symbiodiniaceae_databases/GeoSymbio_ITS2_LocalDatabase.fasta")
 ```
 
 ## Inspect missing sequences
@@ -318,7 +318,7 @@ readDNAStringSet("Durusdinium_fails_aligned.fasta") %>%
   writeXStringSet("Durusdinium_fails_ITS2.fasta")
 ```
 
-### Fr2, Fr3, Fr4, Fugacium
+### Fr2, Freudenthalidium, Fr4, Fugacium
 
 ```{r}
 fails_meta %>%
@@ -363,28 +363,28 @@ readDNAStringSet("Gerakladium_fails_aligned.fasta") %>%
   writeXStringSet("Gerakladium_fails_ITS2.fasta")
 ```
 
-### H
+### Halluxium
 
 ```{r}
 ## All of these sequences are partial - so we need to bring in some complete ITS2 sequences from Clade_H to line them up
 
 fails_meta %>%
-  filter(Symbiont_Genus == "Symbiodinium_H") %>%
+  filter(Symbiont_Genus == "Halluxium") %>%
   select(-accn, -Clade, -Symbiont_Genus, - Type) %>%
   df_to_DNAStringset() %>%
   AlignSeqs() %>%
-  writeXStringSet("Clade_H_fails_aligned.fasta")
+  writeXStringSet("Halluxium_fails_aligned.fasta")
 
-Clade_H_aligned <- read_alignment("Clade_H_fails_aligned.fasta")
+Clade_H_aligned <- read_alignment("Halluxium_fails_aligned.fasta")
 plot_alignment(Clade_H_aligned, "dna")
 # Alignment looks good - ITS2 region we want ends at position 244 of the alignment.
 
-readDNAStringSet("Clade_H_fails_aligned.fasta") %>%
+readDNAStringSet("Halluxium_fails_aligned.fasta") %>%
   DNAStringSet_to_df() %>%
   mutate(seqs = str_sub(seqs, start = 1, end = 244)) %>%
   mutate(seqs = str_remove_all(seqs, "-")) %>%
   df_to_DNAStringset() %>%
-  writeXStringSet("Clade_H_fails_ITS2.fasta")
+  writeXStringSet("Halluxium_fails_ITS2.fasta")
 ```
 
 ### Effrenium
@@ -417,7 +417,7 @@ Clade_F <- readDNAStringSet("Clade_F_fails_ITS2.fasta") %>%
   DNAStringSet_to_df()
 Gerakladium <- readDNAStringSet("Gerakladium_fails_ITS2.fasta") %>%
   DNAStringSet_to_df()
-Clade_H <- readDNAStringSet("Clade_H_fails_ITS2.fasta") %>%
+Halluxium <- readDNAStringSet("Halluxium_fails_ITS2.fasta") %>%
   DNAStringSet_to_df()
 Effrenium <- readDNAStringSet("Effrenium_fails_ITS2.fasta") %>%
   DNAStringSet_to_df()
@@ -429,7 +429,7 @@ geosymbio_curated_sequences <- rbind(short_plus_long_trimmed,
                                      Durusdinium,
                                      Clade_F,
                                      Gerakladium,
-                                     Clade_H,
+                                     Halluxium,
                                      Effrenium) %>%
   mutate(accn = stringi::stri_extract(names, regex='[^.]*')) %>%
   left_join(., geosymbio, by = c("accn" = "Genbank")) %>%
@@ -444,13 +444,25 @@ geosymbio_curated_sequences %>%
   writeXStringSet("geosymbio_curated.fasta")
 ```
 
+# Manual editing of mis-labelled reads in NCBI
+
+```{r}
+readDNAStringSet("geosymbio_curated.fasta") %>%
+  DNAStringSet_to_df() %>%
+  mutate(new_names = case_when(names == "C3_AF333516" ~ "F_AF333516", # LaJeunesse (2001) J. Phycol: Incorrectly entered in NCBI as C3. In the paper is listed as a "F" sequence
+         TRUE ~ as.character(names))) %>%
+  select(names = new_names, seqs) %>%
+  df_to_DNAStringset() %>%
+  writeXStringSet("geosymbio_curated.fasta")
+```
+
 # SymbioGBR
 
 Tonk, L., Bongaerts, P., Sampayo, E. M., & Hoegh-Guldberg, O. (2013). SymbioGBR: a web-based database of Symbiodinium associated with cnidarian hosts on the Great Barrier Reef. BMC ecology, 13(1), 7.
 
 ```{r}
 # Import geosymbio sequence data directly downloaded from website
-symbioGBR.fasta <- readDNAStringSet("../Published_databases/SymbioGBR.fasta")
+symbioGBR.fasta <- readDNAStringSet("../Published_Symbiodiniaceae_databases/SymbioGBR.fasta")
 ```
 
 ```{r}
@@ -462,21 +474,30 @@ symbioGBR.df <- symbioGBR.fasta  %>%
   DNAStringSet_to_df()
 ```
 
+# Freudenthalidium heronense, F. endolithicum, and Halluxium pauxillum type sequences
+
+Nitschke, Matthew R., Craveiro, Sandra C., Brandao, Claudio, Fidalgo, Catia, Serodio, Joao & Frommlet, Jorg C. (2020) Description of Freudenthalidium gen. nov. and Halluxium gen. nov. to formally recognize clades Fr3 and H as genera in the family Symbiodiniaceae (Dinophyceae), Journal of Phycology
+
+```{r}
+Fr3_H <- readDNAStringSet("../Species_ITS2_types/Nitschke_et_al_JPhycol_2020.fasta") %>%
+  DNAStringSet_to_df()
+```
+
 # Symbiodatabaceae
 
 ```{r}
 # Bind the two datasets together
-geosymbio_symbioGBR <- rbind(geosymbio_curated, symbioGBR.df)
+Symbiodatabaceae <- rbind(geosymbio_curated, symbioGBR.df, Fr3_H)
 
 # Dereplicate and concatenate the two datasets ---
 
 # Note: During the writing of derep_cat_names function it became evident that geosymbio does not consistently label genbank accession numbers with same_as. Some are not labelled with same_as, despite being identical sequences, from the same study, where the samples came from different depths. Whereas other entries that come from different depths/hosts but have the same sequences, are labelled with same_as_
 
-geosymbio_symbioGBR %>%
+Symbiodatabaceae %>%
   df_to_DNAStringset() %>%
   derep_cat_names() %>%
   writeXStringSet("Symbiodatabaceae.fasta")
 
-# SymbioDatabaceae.fasta is a curated geosymbio ITS2 sequence database in Type_Accession format. We have increased the number of sequences from 409 in the GeoSymbio_ITS2_LocalDatabase.fasta file that can be downloaded in from the Geosymbio webpage, to 789 sequences, and each sequence can be traced back to its reference accession. The file is dereplicated to contain unique sequences, during which the names of the replicates were concatenated.
+# SymbioDatabaceae.fasta is a curated geosymbio ITS2 sequence database in Type_Accession format. We have increased the number of sequences from 409 in the GeoSymbio_ITS2_LocalDatabase.fasta file that can be downloaded in from the Geosymbio webpage, to 776 sequences, and each sequence can be traced back to its reference accession. The file is dereplicated to contain unique accession numbers and sequences, during which the names of the replicates were concatenated.
 ```
 

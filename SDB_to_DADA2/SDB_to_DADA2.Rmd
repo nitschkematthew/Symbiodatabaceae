@@ -66,10 +66,10 @@ SDB_tax <- SDB %>%
     str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 3) == "N_A" ~ "Symbiodinium_F",
     str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F_" ~ "Symbiodinium_F",
     str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F2" ~ "Symbiodinium_Fr2",
-    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F3" ~ "Symbiodinium_Fr3",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F3" ~ "Freudenthalidium",
     str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F4" ~ "Symbiodinium_Fr4",
     str_sub(names, start = 1, end = 1) == "G" ~ 'Gerakladium',
-    str_sub(names, start = 1, end = 1) == "H" ~ 'Symbiodinium_H',
+    str_sub(names, start = 1, end = 1) == "H" ~ 'Halluxium',
     str_sub(names, start = 1, end = 1) == "I" ~ 'Symbiodinium_I',
     TRUE ~ "Unknown")) %>%
   mutate(taxonomy = tax) %>%
@@ -83,7 +83,7 @@ dist <- SDB_tax %>%
   arrange(names) %>%
   df_to_DNAStringset() %>%
   DNAStringSet_to_DNAbin() %>%
-  kdistance(k = 6, residues = "DNA", method = "euclidean")
+  kdistance(k = 6, residues = "DNA", method = "edgar")
 
 dist_m <- dist %>% 
   as.matrix()
@@ -104,13 +104,15 @@ unknown_dist_summary <- long_dist %>%
   group_by(genus1, genus2) %>%
   summarise(meankdist = mean(value),
             sdkdist = sd(value))
-# Most unknown sequences included in SymbioGBR are likely to be Cladocopium, except for Symbiodinium sp. StereoSH1_AB253788 which looks like Gerakladium. Revise the taxonomy accordingly.
+
+# Most unknown sequences included in SymbioGBR are likely to be Cladocopium, except for Symbiodinium_AB253788 which looks like Gerakladium. Revise the taxonomy accordingly.
 
 F_dist_summary <- long_dist %>%
   filter(genus1 == "Symbiodinium_F") %>%
   group_by(genus1, genus2) %>%
   summarise(meankdist = mean(value),
             sdkdist = sd(value))
+
 # Most of the Symbiodinium_F sequences are closest to Fugacium. Revise the taxonomy accordingly.
 ```
 
@@ -130,12 +132,12 @@ SDB_tax_revised <- SDB %>%
     str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 3) == "N_A" ~ "Fugacium",
     str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F_" ~ "Fugacium",
     str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F2" ~ "Symbiodinium_Fr2",
-    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F3" ~ "Symbiodinium_Fr3",
+    str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F3" ~ "Freudenthalidium",
     str_sub(names, start = 1, end = 1) == "F" & str_sub(names, start = 1, end = 2) == "F4" ~ "Symbiodinium_Fr4",
     str_sub(names, start = 1, end = 1) == "G" ~ 'Gerakladium',
-    str_sub(names, start = 1, end = 1) == "H" ~ 'Symbiodinium_H',
+    str_sub(names, start = 1, end = 1) == "H" ~ 'Halluxium',
     str_sub(names, start = 1, end = 1) == "I" ~ 'Symbiodinium_I',
-    str_detect(names, "Symbiodinium sp. StereoSH1_AB253788") ~ 'Gerakladium', # This is quite an interesting sequence - closest is Gerakladium
+    str_detect(names, "Symbiodinium_AB253788") ~ 'Gerakladium', # This is quite an interesting sequence - closest is Gerakladium
     TRUE ~ "Cladocopium")) %>% # The rest are Cladocopium
   mutate(taxonomy = tax) %>%
   unite(col = "names", taxonomy, genus, names, sep = ";")
@@ -149,7 +151,7 @@ dist_revised <- SDB_tax_revised %>%
   arrange(names) %>%
   df_to_DNAStringset() %>%
   DNAStringSet_to_DNAbin() %>%
-  kdistance(k = 6, residues = "DNA", method = "euclidean")
+  kdistance(k = 6, residues = "DNA", method = "edgar")
 
 dist_m_revised <- dist_revised %>% 
   as.matrix()
@@ -173,11 +175,12 @@ long_dist_revised_summary <- long_dist_revised %>%
 # Looking pretty good in terms of genus-binning according to k-distance.
 ggplot(data = long_dist_revised_summary) +
   theme_bw() +
-  geom_tile(aes(x = genus1, y = genus2, fill = meankdist)) +
-  scale_fill_viridis(name = "kdist", option = "C") +
+  geom_tile(aes(x = genus2, y = genus1, fill = meankdist)) +
+  scale_fill_viridis(name = "kdist") +
   theme(aspect.ratio = 1, axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
-  scale_x_discrete(limits = unique(long_dist_revised_summary$genus1)) +
-  scale_y_discrete(limits = unique(long_dist_revised_summary$genus1))
+  coord_fixed() +
+  scale_x_discrete(limits = levels(long_dist_revised_summary$genus1)) +
+  scale_y_discrete(limits = levels(long_dist_revised_summary$genus2))
 ```
 
 # Write the Symbiodatabaceae output with the updated taxonomy
